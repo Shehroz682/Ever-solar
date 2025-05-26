@@ -1,21 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-
-// Define global variables for Firebase configuration (provided by Canvas environment)
-// Ensure these are defined before initializing Firebase
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
 // Main App component for Electricity Load Calculator and Solar Quotation
 const App = () => {
-  // Firebase state
-  const [firebaseApp, setFirebaseApp] = useState(null);
-  const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-
   // State to manage the list of appliances
   const [appliances, setAppliances] = useState([
     { id: 1, name: 'Lights (LED)', wattage: 10, hoursPerDay: 6, quantity: 10 },
@@ -38,52 +24,12 @@ const App = () => {
   const [location, setLocation] = useState('');
   const [formSubmissionMessage, setFormSubmissionMessage] = useState('');
 
-  // State for LLM suggestions
-  const [suggestedAppliances, setSuggestedAppliances] = useState([]);
-  const [isSuggesting, setIsSuggesting] = useState(false);
-  const [suggestionError, setSuggestionError] = useState('');
-
-  // State for energy saving tips
-  const [energySavingTips, setEnergySavingTips] = useState('');
-  const [isGeneratingTips, setIsGeneratingTips] = useState(false);
-  const [tipsError, setTipsError] = useState('');
-
-
   // Constants for solar calculation (simplified assumptions)
   const AVERAGE_PEAK_SUN_HOURS_PER_DAY = 5; // Average for many regions
   const SYSTEM_EFFICIENCY_FACTOR = 0.8; // Accounts for losses
   const COST_PER_WATT_SAR = 11.25; // Approx $3.0 USD/watt * 3.75 SAR/USD
   const AVERAGE_ELECTRICITY_TARIFF_SAR_PER_KWH = 0.18; // Rough estimate for residential in KSA
   const SAVINGS_PERCENTAGE = 0.85; // Assume 85% of bill can be offset
-
-  // Initialize Firebase and handle authentication
-  useEffect(() => {
-    try {
-      const app = initializeApp(firebaseConfig);
-      const authInstance = getAuth(app);
-      setFirebaseApp(app);
-      setAuth(authInstance);
-
-      const signIn = async () => {
-        try {
-          if (initialAuthToken) {
-            await signInWithCustomToken(authInstance, initialAuthToken);
-          } else {
-            await signInAnonymously(authInstance);
-          }
-          setUserId(authInstance.currentUser?.uid || crypto.randomUUID());
-          setIsAuthReady(true);
-        } catch (error) {
-          console.error("Firebase authentication error:", error);
-          setIsAuthReady(true); // Still set ready even if auth fails, to allow app to load
-        }
-      };
-      signIn();
-    } catch (error) {
-      console.error("Firebase initialization error:", error);
-      setIsAuthReady(true); // Still set ready even if init fails
-    }
-  }, []);
 
   // Effect to recalculate whenever appliances change
   useEffect(() => {
@@ -98,29 +44,6 @@ const App = () => {
       ...appliances,
       { id: Date.now(), name: '', wattage: '', hoursPerDay: '', quantity: '' },
     ]);
-  };
-
-  /**
-   * Adds a suggested appliance to the main list.
-   * @param {object} suggestedApp - The suggested appliance object.
-   */
-  const addSuggestedAppliance = (suggestedApp) => {
-    // Check if appliance with same name already exists to prevent duplicates
-    const exists = appliances.some(app => app.name.toLowerCase() === suggestedApp.name.toLowerCase());
-    if (!exists) {
-      setAppliances([
-        ...appliances,
-        {
-          id: Date.now(),
-          name: suggestedApp.name,
-          wattage: suggestedApp.wattage,
-          hoursPerDay: suggestedApp.hoursPerDay,
-          quantity: 1, // Default quantity to 1 for suggested items
-        },
-      ]);
-    }
-    // Clear suggestions after adding one
-    setSuggestedAppliances([]);
   };
 
   /**
@@ -239,123 +162,6 @@ const App = () => {
     setLocation('');
   };
 
-  /**
-   * Calls the Gemini API to suggest more appliances based on the current list.
-   */
-  const suggestMoreAppliances = async () => {
-    setIsSuggesting(true);
-    setSuggestionError('');
-    setSuggestedAppliances([]);
-
-    const currentApplianceNames = appliances.map(app => app.name).join(', ');
-    const prompt = `Given the following list of appliances in a household: ${currentApplianceNames}. Suggest 3-5 other common household appliances that might be missing, along with their typical wattage (W) and average hours used per day. Provide the response as a JSON array of objects, where each object has 'name' (string), 'wattage' (number), and 'hoursPerDay' (number) keys. Ensure the suggested appliances are distinct from the provided list.`;
-
-    let chatHistory = [];
-    chatHistory.push({ role: "user", parts: [{ text: prompt }] });
-
-    const payload = {
-      contents: chatHistory,
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: {
-              "name": { "type": "STRING" },
-              "wattage": { "type": "NUMBER" },
-              "hoursPerDay": { "type": "NUMBER" }
-            },
-            propertyOrdering: ["name", "wattage", "hoursPerDay"]
-          }
-        }
-      }
-    };
-
-    const apiKey = ""; // Canvas will automatically provide the API key
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json();
-
-      if (result.candidates && result.candidates.length > 0 &&
-          result.candidates[0].content && result.candidates[0].content.parts &&
-          result.candidates[0].content.parts.length > 0) {
-        const jsonString = result.candidates[0].content.parts[0].text;
-        const parsedSuggestions = JSON.parse(jsonString);
-
-        // Filter out suggestions that are already in the current appliances list
-        const filteredSuggestions = parsedSuggestions.filter(suggestedApp =>
-          !appliances.some(existingApp => existingApp.name.toLowerCase() === suggestedApp.name.toLowerCase())
-        );
-
-        setSuggestedAppliances(filteredSuggestions);
-      } else {
-        setSuggestionError('Could not get suggestions. Please try again.');
-      }
-    } catch (error) {
-      console.error("Error fetching appliance suggestions:", error);
-      setSuggestionError('Failed to fetch suggestions. Please check your network connection.');
-    } finally {
-      setIsSuggesting(false);
-    }
-  };
-
-  /**
-   * Calls the Gemini API to generate energy-saving tips based on the current appliance list.
-   */
-  const handleGetEnergySavingTips = async () => {
-    setIsGeneratingTips(true);
-    setTipsError('');
-    setEnergySavingTips('');
-
-    const applianceListText = appliances.map(app => `<span class="math-inline">\{app\.name\} \(</span>{app.wattage}W, ${app.hoursPerDay} hours/day, ${app.quantity} quantity)`).join('; ');
-    const prompt = `Given the following list of household appliances and their usage: ${applianceListText}. Provide 3-5 concise and actionable energy-saving tips specifically tailored to reduce the electricity consumption related to these types of appliances. Focus on practical advice.`;
-
-    let chatHistory = [];
-    chatHistory.push({ role: "user", parts: [{ text: prompt }] });
-
-    const payload = {
-      contents: chatHistory,
-      generationConfig: {
-        responseMimeType: "text/plain", // Request plain text for tips
-      }
-    };
-
-    const apiKey = ""; // Canvas will automatically provide the API key
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json();
-
-      if (result.candidates && result.candidates.length > 0 &&
-          result.candidates[0].content && result.candidates[0].content.parts &&
-          result.candidates[0].content.parts.length > 0) {
-        setEnergySavingTips(result.candidates[0].content.parts[0].text);
-      } else {
-        setTipsError('Could not generate energy-saving tips. Please try again.');
-      }
-    } catch (error) {
-      console.error("Error generating energy saving tips:", error);
-      setTipsError('Failed to generate tips. Please check your network connection.');
-    } finally {
-      setIsGeneratingTips(false);
-    }
-  };
-
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-100 to-green-100 flex items-center justify-center p-4 font-inter">
       <div className="bg-white rounded-xl shadow-2xl p-8 md:p-10 w-full max-w-2xl">
@@ -429,77 +235,6 @@ const App = () => {
           >
             Add Another Appliance
           </button>
-          <button
-            onClick={suggestMoreAppliances}
-            className="w-full bg-purple-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-purple-600 transition duration-300 ease-in-out mt-4 flex items-center justify-center"
-            disabled={isSuggesting}
-            aria-label="Suggest More Appliances"
-          >
-            {isSuggesting ? (
-              <svg className="animate-spin h-5 w-5 text-white mr-3" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            ) : (
-              '✨ Suggest Appliances'
-            )}
-          </button>
-          {suggestionError && (
-            <p className="text-red-600 text-sm mt-4 text-center">{suggestionError}</p>
-          )}
-
-          {suggestedAppliances.length > 0 && (
-            <div className="mt-6 p-4 bg-yellow-100 rounded-lg shadow-inner">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">Suggested Appliances:</h3>
-              <div className="space-y-2">
-                {suggestedAppliances.map((suggApp, index) => (
-                  <div key={index} className="flex justify-between items-center bg-yellow-50 p-2 rounded-lg">
-                    <span className="text-gray-700">
-                      {suggApp.name} ({suggApp.wattage}W, {suggApp.hoursPerDay}h/day)
-                    </span>
-                    <button
-                      onClick={() => addSuggestedAppliance(suggApp)}
-                      className="bg-green-500 text-white text-xs px-3 py-1 rounded-full hover:bg-green-600 transition duration-200"
-                      aria-label={`Add ${suggApp.name}`}
-                    >
-                      Add
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <button
-            onClick={handleGetEnergySavingTips}
-            className="w-full bg-indigo-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-indigo-600 transition duration-300 ease-in-out mt-4 flex items-center justify-center"
-            disabled={isGeneratingTips}
-            aria-label="Get Energy Saving Tips"
-          >
-            {isGeneratingTips ? (
-              <svg className="animate-spin h-5 w-5 text-white mr-3" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-            ) : (
-              '✨ Get Energy Saving Tips'
-            )}
-          </button>
-          {tipsError && (
-            <p className="text-red-600 text-sm mt-4 text-center">{tipsError}</p>
-          )}
-
-          {energySavingTips && (
-            <div className="mt-6 p-4 bg-blue-100 rounded-lg shadow-inner">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">Your Personalized Energy Saving Tips:</h3>
-              <div className="prose prose-sm max-w-none text-gray-700">
-                {energySavingTips.split('\n').map((tip, index) => (
-                  <p key={index}>{tip}</p>
-                ))}
-              </div>
-            </div>
-          )}
-
           {calculationError && (
             <p className="text-red-600 text-sm mt-4 text-center">{calculationError}</p>
           )}
